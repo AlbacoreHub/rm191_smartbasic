@@ -1,0 +1,442 @@
+DIM rc
+
+DIM horiAcumulado, horiAtual, gethorim
+DIM startT, elapseT
+DIM factor
+DIM lastHor$
+DIM getstart	
+
+DIM ncurrentsize, nmaxsize 
+DIM joined
+DIM transmit
+DIM rcuart, led5, count
+DIM data$, tag$, nmea$, relogio$, lat$, lng$
+
+//Comando para zerar o horímetro
+DIM cmd$  
+
+#define VERBOSEDEBUG	1
+
+//Horímetro em minutos (1) segundos (0)
+#define HORMIN	0
+#define NVPOS	500
+//Habilita captura do GPS
+#define GPS			1
+#define BAUDRATE	115200	
+
+//LoRaWAN
+#define LORAMAC_JOIN_BY_REQUEST 		1 		// Used with LORAMACJoin 
+#define LORAMAC_JOIN_BY_PERSONALIZATION 0 		// Used with LORAMACJoin
+#define LORA_TX_INTERVAL				240	// 1200 / 2 = 600 => 10 minutos  (base de tempo 500ms)
+												// 7200 / 2 = 3600 => 60 minutos / 1 hora
+												// 43200 / 2 = 21600 => 6 horas / 4x por dia
+
+
+
+
+//*******************************************************************************
+//FUNÇÕES DE HORIMETRO
+
+
+//Sub-rotina de tratamento de exceptions
+SUB HandlerOnErr() //Do this when an error occurs 
+	DIM le	
+	le = GetLastError() 
+	IF VERBOSEDEBUG THEN
+		PRINT "\nError code 0x";le
+	ENDIF	
+ENDSUB
+
+FUNCTION ConvertHexStr2Decimal(s$)
+    DIM hexstr$
+	DIM intValue, bytes
+	
+	hexstr$ = "0x"+s$
+	bytes = ExtractIntToken(hexstr$,intValue)		
+ENDFUNC intValue
+
+SUB GravaNVMemory(horimetro)
+    DIM rc
+	DIM newHor$
+	
+	SPRINT #newHor$, integer.h'horimetro
+	
+	IF VERBOSEDEBUG THEN
+		PRINT "\nGravando --> ";newHor$
+	ENDIF
+		
+	rc = NvRecordSet(NVPOS, newHor$)	
+	
+	IF rc == -1 THEN
+		IF VERBOSEDEBUG THEN
+			PRINT "\nErro --> ";rc
+		ENDIF			
+	ENDIF		
+ENDSUB
+
+//Função que calcula o horímetro
+SUB CalculaHorimetro() //Do this when an error occurs 
+	DIM horiAux
+	DIM temp
+				
+	IF gethorim == 1 THEN		
+	
+		elapseT = GetTickSince(startT)
+			
+		//Determina o fator
+		IF HORMIN == 1 THEN
+						
+			horiAux = (elapseT / 1000) / 60		//Obtem os minutos
+			
+		ELSE
+			
+			horiAux = (elapseT / 1000) 			//Obtem os segundos
+			
+		ENDIF	
+		
+		horiAtual = horiAux + horiAcumulado
+					
+		//Grava NV  *apenas se teve horas trabalhadas
+		if horiAtual > horiAcumulado THEN
+			GravaNVMemory(horiAtual)
+		ENDIF
+		
+		IF VERBOSEDEBUG THEN
+			IF HORMIN == 1 THEN
+				PRINT "  Horimetro Atual (min):"; integer.h'horiAtual				
+			ELSE
+				PRINT "  Horimetro Atual (seg):"; integer.h'horiAtual				
+			ENDIF			
+		ENDIF
+	
+	ENDIF		
+		
+ENDSUB
+
+
+
+//Função que detecta o evento para zerar Horimetro
+FUNCTION Btn1press() 
+	// IF getstart == 1 THEN
+		// getstart = 0
+		// IF VERBOSEDEBUG THEN
+			// PRINT "\nReset do Horimetro"
+		// ENDIF		
+		// horiAcumulado = 0
+		// horiAtual = 0
+	// ENDIF
+ENDFUNC 1 //Will continue waiting for an event
+
+//Função que detecta o Trigger do Horimetro
+FUNCTION Btn2press() 
+	startT = GetTickCount()
+	gethorim = 1
+ENDFUNC 1 //Will continue waiting for an event 
+
+//Tratamento do release do botão
+FUNCTION Btn2rel() 
+	CalculaHorimetro()
+	
+	//Atualiza o acumulado em memória
+	horiAcumulado = horiAtual
+			
+	gethorim = 0		
+ENDFUNC 1
+
+
+
+
+
+//*****************************************************************************
+//Funções de captura do GPS
+FUNCTION gps_tick()
+	dim ret, auxpos
+	dim s
+	dim aux$, to$
+
+	to$ = ","
+
+	s=UartRead(nmea$)			
+	
+	IF VERBOSEDEBUG THEN
+		PRINT "\nReceived: ";nmea$
+	ENDIF
+	
+	data$ = ""
+	ret = StrPos(nmea$,tag$,0)
+
+	if ret != -1 then
+		if StrLen(nmea$) >= 40 then
+			StrShiftLeft(nmea$,ret) 
+			StrShiftLeft(nmea$, StrLen(tag$))
+			
+			IF VERBOSEDEBUG THEN
+				PRINT "\nNMEA. ";nmea$
+			ENDIF
+			
+			auxpos = StrPos(nmea$,to$,0)
+			if auxpos != -1 then
+				if auxpos != 0 then
+				
+					lat$ = StrSplitLeft$(nmea$, auxpos)
+					aux$ = StrSplitLeft$(nmea$, 3)
+					auxpos = StrPos(nmea$,to$,0)
+					lng$ = StrSplitLeft$(nmea$, auxpos)
+					aux$ = StrSplitLeft$(nmea$, 3)
+					auxpos = StrPos(nmea$,to$,0)
+					relogio$ = StrSplitLeft$(nmea$, auxpos)
+					
+					IF VERBOSEDEBUG THEN
+						PRINT "\nGPS Parse: ";lat$,lng$,relogio$
+					ENDIF
+				endif					
+			endif
+		else
+			IF VERBOSEDEBUG THEN
+				PRINT "\nNMEA incompleto"
+			ENDIF				
+		endif		
+	else
+		nmea$ = ""
+	endif
+ENDFUNC 1
+
+
+
+//*****************************************************************************
+//Funções de LoRaWAN
+
+SUB lora_transmit()
+	dim hori$	
+	dim intAux
+	
+	if transmit == 1 then
+		
+		CalculaHorimetro()
+	
+		intAux = horiAtual / 60
+		SPRINT #hori$, integer.h'intAux
+		
+		transmit = 0   //espera a liberação do loramactx
+		data$ = ""
+		
+		data$ = hori$ + ";" + lat$ + ";" + lng$
+						
+		rc = LoramacQueryTxPossible(strlen(data$),ncurrentsize,nmaxsize)
+        if rc == 0 then
+            rc = LORAMACTxData(1,data$, 0)
+            if rc != 0 then
+				IF VERBOSEDEBUG THEN
+					PRINT "Failed to send packet.\n"
+				ENDIF
+            else
+                IF VERBOSEDEBUG THEN
+					PRINT "\nSending over LoRa > ";data$
+				ENDIF
+            endif
+        else
+			IF VERBOSEDEBUG THEN
+				PRINT "Packet too large\n"   
+			ENDIF        
+        endif
+		
+	endif	
+		
+ENDSUB
+
+
+FUNCTION lora_tick()
+	count = count + 1	
+	if joined == 1 then			
+		gpiowrite(6,1)		
+		if count > LORA_TX_INTERVAL then
+			transmit = 1
+			count = 0
+			lora_transmit()
+		endif		
+	else 
+		led5 = !led5
+		gpiowrite(6,led5)
+		transmit = 0
+		count = 0
+		
+		IF GPS == 1 THEN
+			UartFlush(01)
+		ENDIF
+	endif			
+ENDFUNC 1
+
+
+FUNCTION HndlrUartRx()	
+	TIMERSTART(0,100,0) //Allow enough time for data to reach rx buffer		
+ENDFUNC 1
+
+FUNCTION HandlerLoramacJoining() As Integer 
+	IF VERBOSEDEBUG THEN
+		PRINT "\nJoining"	
+	ENDIF
+	joined = 0
+ENDFUNC 1 
+
+FUNCTION HandlerLoramacJoined() As Integer 
+	//JoinAccept has been received. You are now free to transmit data packets 
+	IF VERBOSEDEBUG THEN
+		PRINT "\nJoined"	
+	ENDIF	 
+	joined = 1 
+ENDFUNC 1
+
+FUNCTION HandlerLoramacRxTimeout() As Integer 
+	// A JoinAccept has still not been received after the JoinRequest has been 
+	// attempted a configured number of times 
+	//print "\nRxTimeout" 
+ENDFUNC 1 
+
+FUNCTION HandlerLoramacTxTimeout() As Integer 
+	// Something has gone wrong so you need to resend the JoinRequest or data packet 
+	//print "\nTxTimeout" 
+ENDFUNC 1
+
+FUNCTION HandlerLoramacRxError() As Integer 
+	// Something has gone wrong so you need to resend the JoinRequest 
+	//print "\nRxError" 
+ENDFUNC 1 
+
+FUNCTION HandlerLoramacTxComplete() As Integer 
+	// TxComplete has been received 
+	//print "\nTxComplete"	
+ENDFUNC 1
+
+FUNCTION HandlerLoramacRxComplete() As Integer 
+	// RxComplete has been received 
+	//print "\nRxComplete" 
+ENDFUNC 1 
+
+FUNCTION HandlerNextTx() As Integer 	
+	if joined == 0 then 
+		rc = LORAMACJoin(LORAMAC_JOIN_BY_REQUEST)
+		transmit = 0
+	endif
+ENDFUNC 1
+
+FUNCTION HandlerSequenceComplete(flag, netxtime) As Integer 
+	//print "\nSequence complete ";flag 
+	//print "\nNext time ",netxtime 
+ENDFUNC 1 
+
+FUNCTION HandlerLoramacRxData() As Integer 
+	dim ret
+	dim rxdata$ 
+	dim nRSSI,nPort,nSNR,nFramePending,nPacketType 
+	
+	rc = LORAMACRxData(rxdata$, nRSSI, nPort, nSNR, nFramePending, nPacketType) 
+	//print "\nStatus ";nPort;"\nRSSI: ";nRSSI;" SNR: ";nSNR;"\n" 
+	//print "\nDataReceived -> ";rxdata$
+	
+	ret = StrPos(rxdata$,cmd$,0)
+
+	if ret != -1 then
+		StrShiftLeft(rxdata$,3)
+		horiAcumulado = StrValDec(rxdata$)
+		horiAtual = horiAcumulado		
+		
+		IF VERBOSEDEBUG THEN
+			print "\nLoRaDownlink -> ";horiAcumulado	
+		ENDIF
+		
+		//Atualiza o horímetro
+		CalculaHorimetro()		
+	endif
+ENDFUNC 1 
+
+ONEVENT EVLORAMACJOINING CALL HandlerLoramacJoining 
+ONEVENT EVLORAMACJOINED CALL HandlerLoramacJoined 
+ONEVENT EVLORAMACRXTIMEOUT CALL HandlerLoramacRxTimeout 
+ONEVENT EVLORAMACTXTIMEOUT CALL HandlerLoramacTxTimeout 
+ONEVENT EVLORAMACRXERROR CALL HandlerLoramacRxError
+ONEVENT EVLORAMACTXCOMPLETE CALL HandlerLoramacTxComplete 
+ONEVENT EVLORAMACRXCOMPLETE CALL HandlerLoramacRxComplete 
+ONEVENT EVLORAMACRXDATA CALL HandlerLoramacRxData 
+ONEVENT EVLORAMACNEXTTX CALL HandlerNextTx 
+ONEVENT EVLORAMACSEQUENCECOMPLETE CALL HandlerSequenceComplete
+
+onevent EVTMR0 call gps_tick
+onevent EVTMR1 call lora_tick
+ONEVENT EVUARTRX CALL HndlrUartRx
+
+
+
+
+//Configuração do hardware / Periféricos
+
+IF GPS == 1 THEN
+	UartClose()
+	rcuart = UartOpen(BAUDRATE,0,512,"CN81N")	//Configuração da inteface serial
+ENDIF
+
+rc = GPIOSETFUNC(5,1,4)				//BUTTON2 as input
+rc = GPIOSETFUNC(28,1,4)			//J6 jumper as input
+rc = gpiobindevent(0,5,0)			//Trigger de iniciar horimetro
+rc = gpiobindevent(1,5,1)			//Trigger de calcular horimetro
+rc = gpiobindevent(2,28,1)			//Zerar contador de horimetro
+rc = gpiosetfunc(6,2,0)				//sets sio6 (LED5) as a digital out / LoRaWAN status
+
+//Trigger do Horimetro
+onevent evgpiochan0 call Btn2rel //detects when button 0 is released and calls the function 
+onevent evgpiochan1 call Btn2press //detects when button 0 is pressed and calls the function
+onevent evgpiochan2 call Btn1press //detects when button 0 is pressed and calls the function
+
+//Tratamento de exceptions
+ONERROR NEXT HandlerOnErr
+
+
+
+//Inicializa as variáveis globais
+//*****	 LoRaWAN
+data$ = "" 
+tag$="$GPGLL,"
+joined = 0 
+transmit = 0
+led5 = 0
+count = 0
+cmd$="c1:"
+startT = 0
+
+rc = LORAMACJoin(LORAMAC_JOIN_BY_REQUEST)
+
+//*****  HORIMETRO
+horiAcumulado = 0	//Horímetro acumulado
+horiAtual = 0		//Horimetro em curso
+gethorim = 0		//Inicia desabilitado a captura do horímetro
+getstart = 1		//Zera horímetro no start da aplicação
+
+
+TIMERSTART(1, 500, 1)   //Start the recursive timer for LORAWAN status connection
+
+
+//Caso o trigger de Horimetro não tenha acontecido
+IF startT == 0 && GpioRead(5) == 0 THEN
+	startT = GetTickCount()	
+	gethorim = 1		
+ENDIF
+
+
+//Obtem o Horimetro armazenada no NV Flash
+rc = NvRecordGet(NVPOS, lastHor$)
+IF rc != -1 THEN
+	horiAcumulado = ConvertHexStr2Decimal(lastHor$)	
+	horiAtual = horiAcumulado
+	IF VERBOSEDEBUG THEN
+		PRINT "\nstarted..."
+	ENDIF
+	
+	WAITEVENT 
+ELSE	
+	PRINT "\nErro na leitura Horimetro"		
+ENDIF
+
+
+
+
+
+PRINT "\nFinal da aplicação"

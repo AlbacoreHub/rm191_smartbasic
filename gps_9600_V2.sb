@@ -1,0 +1,187 @@
+#define LORAMAC_JOIN_BY_REQUEST 		1 		// Used with LORAMACJoin 
+#define LORAMAC_JOIN_BY_PERSONALIZATION 0 		// Used with LORAMACJoin 
+
+DIM rc, ret, auxpos, count 
+DIM data$, tag$, temp$, lat$, lng$, to$
+DIM ncurrentsize, nmaxsize 
+DIM joined
+DIM transmit
+
+DIM rcuart, led5, d
+
+UartClose()
+rcuart = UartOpen(9600,0,0,"CN81N") 
+
+function HandlerTimer0()
+	
+	if joined == 1 && transmit == 1 then 
+	
+		d=UartRead(temp$)
+		
+		ret = StrPos(temp$,tag$,0)
+	
+		if ret != -1 then
+			StrShiftLeft(temp$,ret) 
+			if StrLen(temp$) > 40 then
+				StrShiftLeft(temp$, StrLen(tag$))
+				
+				auxpos = StrPos(temp$,to$,0)
+				if auxpos != -1 then
+					if auxpos != 0 then
+					    lat$ = StrSplitLeft$(temp$, auxpos)
+						StrShiftLeft(temp$, 3)
+						auxpos = StrPos(temp$,to$,0)
+						lng$ = StrSplitLeft$(temp$, auxpos)
+						
+						data$ = lat$ + ";" + lng$
+						
+						rc = LoramacQueryTxPossible(strlen(data$),ncurrentsize,nmaxsize) 
+										
+						rc = LORAMACTxData(2,data$, 0) 
+						
+						transmit = 0   //Espera a liberação do LORAMACtx
+						
+						data$ = ""
+						temp$ = ""
+					endif					
+				endif			
+			endif
+		else
+			temp$ = "" 
+		endif		
+	else 
+		UartFlush(01)
+		rc = LORAMACJoin(LORAMAC_JOIN_BY_REQUEST)
+	endif	
+		
+endfunc 1
+
+
+
+
+function HandlerTimer1()
+	count = count + 1
+	
+	if joined == 1 then		
+		gpiowrite(6,1)	
+		
+		if count > 60 then
+			transmit = 1
+			count = 0
+		endif
+		
+	else 
+		led5 = !led5
+		gpiowrite(6,led5)
+		transmit = 0
+		count = 0
+	endif	
+		
+endfunc 1
+
+
+
+
+
+
+
+FUNCTION HndlrUartRx()	
+	if transmit == 0 then
+		UartFlush(01)
+	else
+		TimerStart(0,100,0) //Allow enough time for data to reach rx buffer
+	endif	
+ENDFUNC 1
+
+FUNCTION HandlerLoramacJoining() As Integer 
+	//print "\nJoining" 
+endfunc 1 
+
+FUNCTION HandlerLoramacJoined() As Integer 
+	//JoinAccept has been received. You are now free to transmit data packets 
+	//print "\nJoined" 
+	joined = 1 
+endfunc 1
+
+FUNCTION HandlerLoramacRxTimeout() As Integer 
+	// A JoinAccept has still not been received after the JoinRequest has been 
+	// attempted a configured number of times 
+	//print "\nRxTimeout" 
+endfunc 1 
+
+FUNCTION HandlerLoramacTxTimeout() As Integer 
+	// Something has gone wrong so you need to resend the JoinRequest or data packet 
+	//print "\nTxTimeout" 
+endfunc 1
+
+FUNCTION HandlerLoramacRxError() As Integer 
+	// Something has gone wrong so you need to resend the JoinRequest 
+	//print "\nRxError" 
+endfunc 1 
+
+FUNCTION HandlerLoramacTxComplete() As Integer 
+	// TxComplete has been received 
+	//print "\nTxComplete"	
+endfunc 1
+
+FUNCTION HandlerLoramacRxComplete() As Integer 
+	// RxComplete has been received 
+	//print "\nRxComplete" 
+endfunc 1 
+
+FUNCTION HandlerNextTx() As Integer 
+	//print "\nNextTx"
+	
+	if joined == 0 then 
+		rc = LORAMACJoin(LORAMAC_JOIN_BY_REQUEST)
+		transmit = 0
+	//else
+	//	transmit = 1
+	endif
+endfunc 1
+
+FUNCTION HandlerSequenceComplete(flag, netxtime) As Integer 
+	//print "\nSequence complete ";flag 
+	//print "\nNext time ",netxtime 
+endfunc 1 
+
+FUNCTION HandlerLoramacRxData() As Integer 
+	//dim rxdata$ 
+	//dim nRSSI,nPort,nSNR,nFramePending,nPacketType 
+	
+	//rc = LORAMACRxData(rxdata$, nRSSI, nPort, nSNR, nFramePending, nPacketType) 
+	//print "\nStatus ";nPort;"\nRSSI: ";nRSSI;" SNR: ";nSNR;"\n" 
+	//print "\nData ";rxdata$ 	
+endfunc 1 
+
+ONEVENT EVLORAMACJOINING CALL HandlerLoramacJoining 
+ONEVENT EVLORAMACJOINED CALL HandlerLoramacJoined 
+ONEVENT EVLORAMACRXTIMEOUT CALL HandlerLoramacRxTimeout 
+ONEVENT EVLORAMACTXTIMEOUT CALL HandlerLoramacTxTimeout 
+ONEVENT EVLORAMACRXERROR CALL HandlerLoramacRxError
+ONEVENT EVLORAMACTXCOMPLETE CALL HandlerLoramacTxComplete 
+ONEVENT EVLORAMACRXCOMPLETE CALL HandlerLoramacRxComplete 
+ONEVENT EVLORAMACRXDATA CALL HandlerLoramacRxData 
+ONEVENT EVLORAMACNEXTTX CALL HandlerNextTx 
+ONEVENT EVLORAMACSEQUENCECOMPLETE CALL HandlerSequenceComplete
+
+onevent EVTMR0 call HandlerTimer0
+onevent EVTMR1 call HandlerTimer1
+ONEVENT EVUARTRX CALL HndlrUartRx
+
+
+data$ = "" 
+tag$="$GPGLL,"
+joined = 0 
+transmit = 0
+led5 = 0
+to$ = ","
+count = 0
+
+rc = LORAMACJoin(LORAMAC_JOIN_BY_REQUEST) 
+rc = gpiosetfunc(6,2,0) 					//sets sio6 (LED5) as a digital out
+
+//Start the recursive timer
+TIMERSTART(1, 500, 1)
+
+WAITEVENT

@@ -1,0 +1,204 @@
+#define TEMP_SENS_PIN 5
+
+dim rc
+dim tempC
+DIM startT, elapseT
+dim led5
+
+DIM ncurrentsize, nmaxsize 
+DIM joined
+DIM transmit, count
+DIM data$
+
+
+//LoRaWAN
+#define LORAMAC_JOIN_BY_REQUEST 		1 		// Used with LORAMACJoin 
+#define LORAMAC_JOIN_BY_PERSONALIZATION 0 		// Used with LORAMACJoin
+#define LORA_TX_INTERVAL				1200	// 1200 / 2 = 600 => 10 minutos  (base de tempo 500ms)
+
+
+
+
+
+//*****************************************************************************
+//Funções de Sensor de Temperatura
+
+SUB takeReading()
+    rc = GpioRead(TEMP_SENS_PIN)
+    tempC = ((19028992-36000*rc)/119706)
+    print tempC;"*C\n"
+ENDSUB
+
+
+//*****************************************************************************
+//Funções de LoRaWAN
+
+SUB lora_tick()		
+	dim d1$, d2$
+	
+	if joined == 1 then 
+
+		if  transmit == 1 then
+			transmit = 0   //espera a liberação do loramactx
+					
+			SPRINT #data$,INTEGER.H'count
+			PRINT "payload: ";data$
+									
+			rc = LoramacQueryTxPossible(strlen(data$),ncurrentsize,nmaxsize) 
+							
+			rc = LORAMACTxData(1,data$, 0)
+		endif		
+		
+	else 		
+		rc = LORAMACJoin(LORAMAC_JOIN_BY_REQUEST)
+	endif	
+		
+ENDSUB
+
+FUNCTION HandlerLoramacJoining() As Integer 
+	//print "\nJoining" 
+ENDFUNC 1 
+
+FUNCTION HandlerLoramacJoined() As Integer 
+	//JoinAccept has been received. You are now free to transmit data packets 
+	//PRINT "\nJoined"		 
+	joined = 1 		
+ENDFUNC 1
+
+FUNCTION HandlerLoramacRxTimeout() As Integer 
+	// A JoinAccept has still not been received after the JoinRequest has been 
+	// attempted a configured number of times 
+	//print "\nRxTimeout" 
+ENDFUNC 1 
+
+FUNCTION HandlerLoramacTxTimeout() As Integer 
+	// Something has gone wrong so you need to resend the JoinRequest or data packet 
+	//print "\nTxTimeout" 
+ENDFUNC 1
+
+FUNCTION HandlerLoramacRxError() As Integer 
+	// Something has gone wrong so you need to resend the JoinRequest 
+	//print "\nRxError" 
+ENDFUNC 1 
+
+FUNCTION HandlerLoramacTxComplete() As Integer 
+	// TxComplete has been received 
+	//print "\nTxComplete"	
+ENDFUNC 1
+
+FUNCTION HandlerLoramacRxComplete() As Integer 
+	// RxComplete has been received 
+	//print "\nRxComplete" 
+ENDFUNC 1 
+
+FUNCTION HandlerNextTx() As Integer 	
+	if joined == 0 then 
+		rc = LORAMACJoin(LORAMAC_JOIN_BY_REQUEST)
+		transmit = 0
+	endif
+	//Inicializa variável Tick
+	startT = GetTickCount()
+ENDFUNC 1
+
+FUNCTION HandlerSequenceComplete(flag, netxtime) As Integer 
+	//print "\nSequence complete ";flag 
+	//print "\nNext time ",netxtime 
+ENDFUNC 1 
+
+FUNCTION HandlerLoramacRxData() As Integer 
+		
+ENDFUNC 1 
+
+
+
+//***************************************************************************
+//Função para incrementar contador via BUTTON2
+FUNCTION Btn2press() 
+	count = count + 1
+	transmit = 1
+ENDFUNC 1 //Will continue waiting for an event 
+
+//Função
+FUNCTION Btn2rel() 
+	
+ENDFUNC 1
+
+
+
+
+//*****************************************************************************
+//Main
+function main()	
+	dim ret
+	
+	
+	//LED5 Status LoRa Connected
+	if joined == 1 then			
+		gpiowrite(6,1)				
+	else 
+		led5 = !led5
+		gpiowrite(6, led5)
+		transmit = 0
+	endif
+	
+	//Intervalo de transmissão LoRa
+	elapseT = GetTickSince(startT)
+	if (elapseT / 1000) >= 120 then
+		startT = GetTickCount()
+		transmit = 1
+	endif
+	
+	//Temperatura
+	//takeReading()
+	
+	//LoRa
+	lora_tick()	
+
+endfunc 1
+
+
+
+
+
+
+
+ONEVENT EVLORAMACJOINING CALL HandlerLoramacJoining 
+ONEVENT EVLORAMACJOINED CALL HandlerLoramacJoined 
+ONEVENT EVLORAMACRXTIMEOUT CALL HandlerLoramacRxTimeout 
+ONEVENT EVLORAMACTXTIMEOUT CALL HandlerLoramacTxTimeout 
+ONEVENT EVLORAMACRXERROR CALL HandlerLoramacRxError
+ONEVENT EVLORAMACTXCOMPLETE CALL HandlerLoramacTxComplete 
+ONEVENT EVLORAMACRXCOMPLETE CALL HandlerLoramacRxComplete 
+ONEVENT EVLORAMACRXDATA CALL HandlerLoramacRxData 
+ONEVENT EVLORAMACNEXTTX CALL HandlerNextTx 
+ONEVENT EVLORAMACSEQUENCECOMPLETE CALL HandlerSequenceComplete
+
+//Event handlers
+ONEVENT EVTMR0 CALL main
+
+onevent evgpiochan0 call Btn2rel //detects when button 2 is released and calls the function 
+onevent evgpiochan1 call Btn2press //detects when button 2 is pressed and calls the function
+
+
+//-------------------------------------------------------------
+// Configure the Temperature Sensor pin as an ANALOG INPUT
+//-------------------------------------------------------------
+//rc=GpioSetFunc(TEMP_SENS_PIN,3,0x13)
+
+// LED5
+rc = gpiosetfunc(6,2,0)				//sets sio6 (LED5) as a digital out / LoRaWAN status
+led5 = 0
+
+//Incrementa Contador via BUTTON2
+rc = GPIOSETFUNC(5,1,4)				//BUTTON2 as input
+rc = gpiobindevent(0,5,0)			//Trigger de iniciar horimetro
+rc = gpiobindevent(1,5,1)			//Trigger de calcular horimetro
+
+//******************************************************************************
+// Equivalent to main() in C
+//******************************************************************************
+TimerStart(0,1000,1)
+
+PRINT "Started ..."
+
+waitevent

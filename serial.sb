@@ -1,0 +1,79 @@
+DIM joined
+DIM transmit
+DIM rcuart
+
+dim nmea$
+
+#define BAUDRATE	115200
+
+FUNCTION serial_tick()
+	dim data$, temp$, lat$, lng$, to$, aux$, relogio$
+	dim ret, auxpos
+	dim s
+	dim tag$
+	
+	to$ = ","
+	tag$ = "$GPGLL,"
+	
+	if transmit == 1 then 
+	
+		transmit = 0   //espera a liberação do loramactx
+		nmea$ = ""	
+		s=UartRead(nmea$)
+		
+		PRINT "\nEntrada -> ";nmea$ 
+		
+		data$ = ""
+		ret = StrPos(nmea$,tag$,0)
+	
+		if ret != -1 then
+			if StrLen(nmea$) >= 40 then
+				StrShiftLeft(nmea$,ret) 
+				StrShiftLeft(nmea$, StrLen(tag$))
+				
+				PRINT "\nNMEA -> ";nmea$
+				
+				
+				auxpos = StrPos(nmea$,to$,0)
+				if auxpos != -1 then
+					if auxpos != 0 then
+					
+						lat$ = StrSplitLeft$(nmea$, auxpos)
+						aux$ = StrSplitLeft$(nmea$, 3)
+						auxpos = StrPos(nmea$,to$,0)
+						lng$ = StrSplitLeft$(nmea$, auxpos)
+						aux$ = StrSplitLeft$(nmea$, 3)
+						auxpos = StrPos(nmea$,to$,0)
+						relogio$ = StrSplitLeft$(nmea$, auxpos)
+						data$ = relogio$ + ";" + lat$ + ";" + lng$
+						
+						PRINT "\nLocalizacao -> ";data$					
+						UartFlush(01)			
+					endif					
+				endif
+			else
+				PRINT "\nNMEA incompleto"							
+			endif		
+		else
+			nmea$ = ""
+		endif
+	else 
+		UartFlush(01)
+	endif	
+		
+ENDFUNC 1
+
+
+FUNCTION HndlrUartRx()	
+	transmit = 1
+	TIMERSTART(0,100,0) //Allow enough time for data to reach rx buffer
+	PRINT "\nData has arrived\r"
+ENDFUNC 1
+
+onevent EVTMR0 call serial_tick
+ONEVENT EVUARTRX CALL HndlrUartRx
+
+UartClose()
+rcuart = UartOpen(BAUDRATE,0,512,"CN81N")	//Configuração da inteface serial
+
+WAITEVENT
